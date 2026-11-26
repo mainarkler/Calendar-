@@ -1,0 +1,11 @@
+{
+  "name": "Личный календарь",
+  "short_name": "Календарь",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7f9",
+  "theme_color": "#f6f7f9",
+  "lang": "ru",
+  "icons": []
+}

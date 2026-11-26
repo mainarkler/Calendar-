@@ -24,7 +24,7 @@ main{max-width:1180px;margin:22px auto;padding:0 16px;display:grid;grid-template
 (()=>{'use strict';
 const $=id=>document.getElementById(id), DB='calendarLocalV1', STORE='items', deviceId=localStorage.getItem('calDeviceId')||crypto.randomUUID();
 localStorage.setItem('calDeviceId',deviceId);
-let db,selected=new Date(),month=new Date(),frames=[],frameIndex=0,scanner=null,received=new Map(),activeView='month',dragStart=null,dragEnd=null,reminded=new Set();
+let db,selected=new Date(),month=new Date(),frames=[],frameIndex=0,scanner=null,received=new Map(),activeView='month',dragStart=null,dragEnd=null,reminded=new Set(),shareFileCache=null;
 const pad=n=>String(n).padStart(2,'0'), dateKey=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()), parseDate=s=>new Date(s+'T00:00:00');
 const openDB=()=>new Promise((resolve,reject)=>{let r=indexedDB.open(DB,1);r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)});
 const all=()=>new Promise((res,rej)=>{let r=db.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
@@ -37,7 +37,7 @@ function render(){let y=month.getFullYear(),m=month.getMonth();$('monthTitle').t
 function eventLine(e){return `<div class="event"><div class="time" style="color:${esc(e.color||'#4968d8')}">${e.start||''}</div><div style="min-width:0;flex:1"><div class="event-title">${esc(e.title)}</div>${e.note?'<div class="sub">'+esc(e.note)+'</div>':''}<div class="sub">${e.start||''}–${e.end||''}</div></div><button data-edit="${e.id}" aria-label="Изменить">✎</button></div>`}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function renderLists(){let ev=(window.events||[]).filter(visible).sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start));let day=ev.filter(e=>e.date===dateKey(selected)),today=ev.filter(e=>e.date===dateKey(new Date()));let now=new Date(),end=new Date(now.getTime()+120*60000),up=ev.filter(e=>{let d=new Date(e.date+'T'+e.start);return d>=now&&d<=end});$('dayEvents').innerHTML=day.map(eventLine).join('')||'<div class="empty">Нет событий</div>';$('todayEvents').innerHTML=today.map(eventLine).join('')||'<div class="empty">На сегодня событий нет</div>';$('upcoming').innerHTML=up.map(eventLine).join('')||'<div class="empty">В ближайшие два часа встреч нет</div>';document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editEvent(b.dataset.edit))}
-async function refresh(){window.events=await all();render()}
+async function refresh(){window.events=await all();shareFileCache=buildBackupFile(window.events);render()}
 function durationBetween(start,end){let a=Number(start.slice(0,2))*60+Number(start.slice(3,5)),b=Number(end.slice(0,2))*60+Number(end.slice(3,5));return (b-a+1440)%1440}
 function setEndFromDuration(){let start=$('eventStart').value||'09:00',mins=Number(start.slice(0,2))*60+Number(start.slice(3,5)),duration=$('eventDuration').value==='custom'?durationBetween(start,$('eventEnd').value||start):Number($('eventDuration').value),end=(mins+duration)%1440;$('eventEnd').value=String(Math.floor(end/60)).padStart(2,'0')+':'+String(end%60).padStart(2,'0')}
 function openEvent(e,preset){$('eventForm').reset();$('eventId').value=e?.id||'';$('eventHeading').textContent=e?'Изменить событие':'Новое событие';$('eventName').value=e?.title||'';$('eventNote').value=e?.note||'';$('eventDate').value=e?.date||dateKey(selected);$('eventStart').value=preset?.start||e?.start||'09:00';$('eventEnd').value=preset?.end||e?.end||'09:30';let duration=e?durationBetween(e.start||'09:00',e.end||'09:30'):durationBetween($('eventStart').value,$('eventEnd').value);$('eventDuration').value=duration===60?'60':duration===30?'30':'custom';$('eventColor').value=e?.color||'#4968d8';$('eventReminder').value=String(e?.reminder??15);$('deleteBtn').hidden=!e;$('eventModal').classList.add('open')}
@@ -57,7 +57,7 @@ $('nextFrame').onclick=()=>{frameIndex=frameIndex===frames.length-1?0:frameIndex
 $('startScan').onclick=async()=>{if(!window.Html5Qrcode){$('scanStatus').textContent='Модуль сканирования не загрузился. Проверьте интернет и обновите страницу.';return}try{if(scanner){try{await scanner.stop()}catch{}scanner=null}$('scanStatus').textContent='Запрашиваем доступ к основной камере…';scanner=new Html5Qrcode('reader',{verbose:false,formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],experimentalFeatures:{useBarCodeDetectorIfSupported:true}});await scanner.start({facingMode:{ideal:'environment'}},{fps:15,qrbox:(vw,vh)=>{let side=Math.floor(Math.min(vw,vh)*0.78);side=Math.max(160,Math.min(420,side));return {width:side,height:side}},aspectRatio:1,disableFlip:false,videoConstraints:{facingMode:{ideal:'environment'},focusMode:'continuous'}},onScan,(err)=>{});$('scanStatus').textContent='Камера включена. Держите QR целиком внутри рамки на расстоянии 15–30 см. Наведите камеру ровно, избегайте бликов и дождитесь считывания.'}catch(e){$('scanStatus').textContent='Не удалось запустить камеру: '+(e.message||e)+' . Проверьте разрешение камеры и закройте другие приложения, использующие камеру.';if(scanner){try{await scanner.stop()}catch{}scanner=null}}};
 $('stopScan').onclick=async()=>{if(scanner){try{await scanner.stop()}catch{}scanner=null}};
 let scanBusy=false,completedPacks=new Set();async function onScan(text){if(scanBusy)return;try{let raw=String(text||'').trim(),f;try{f=JSON.parse(raw)}catch{ $('scanStatus').textContent='Код распознан камерой, но это не QR календаря. Откройте на другом устройстве вкладку «Передать» и наведите камеру на QR целиком.';return}if(f.p!=='cal1'||!f.id||!Number.isInteger(f.i)||!Number.isInteger(f.n)||f.i<1||f.i>f.n||typeof f.d!=='string'){ $('scanStatus').textContent='QR распознан, но формат кадра не подходит. Убедитесь, что на другом устройстве открыта актуальная версия календаря.';return}if(completedPacks.has(f.id))return;let pack=received.get(f.id)||{n:f.n,parts:{}};if(pack.n!==f.n){received.delete(f.id);pack={n:f.n,parts:{}}}pack.parts[f.i]=f.d;received.set(f.id,pack);let got=Object.keys(pack.parts).length;$('scanStatus').textContent='Кадр '+f.i+' распознан. Получено '+got+' из '+pack.n+'. Перейдите к следующему QR на передающем устройстве.';if(got===pack.n){scanBusy=true;let payload=Array.from({length:pack.n},(_,i)=>pack.parts[i+1]).join(''),data=JSON.parse(unb64(payload));if(data.protocol!=='calendar-qr-v1'||!Array.isArray(data.events))throw Error('Содержимое пакета не соответствует формату календаря');let count=0,currentEvents=await all(),map=new Map(currentEvents.map(e=>[e.id,e]));for(let incoming of data.events){let current=map.get(incoming.id);if(!current||Number(incoming.updatedAt||0)>Number(current.updatedAt||0)){await put(incoming);count++}}received.delete(f.id);completedPacks.add(f.id);await refresh();$('scanStatus').textContent='Импорт завершён. Применено записей: '+count+'. Теперь можно передать QR обратно для двустороннего обмена.';scanBusy=false}}catch(e){scanBusy=false;$('scanStatus').textContent='Ошибка чтения пакета: '+(e.message||e)+'. Попробуйте повторно отсканировать кадры этого пакета.'}}
-async function makeBackupFile(){let data={protocol:'calendar-backup-v1',createdAt:stamp(),events:await all()};return new File([JSON.stringify(data,null,2)],'calendar-'+dateKey(new Date())+'.json',{type:'application/json'})}
+function buildBackupFile(events){let data={protocol:'calendar-backup-v1',createdAt:stamp(),events};return new File([JSON.stringify(data,null,2)],'calendar-'+dateKey(new Date())+'.json',{type:'application/json'})}
 async function makeDownload(file){
  const url=URL.createObjectURL(file);
  const a=document.createElement('a');
@@ -65,16 +65,26 @@ async function makeDownload(file){
  document.body.appendChild(a);a.click();
  setTimeout(()=>{a.remove();URL.revokeObjectURL(url)},60000);
 }
-async function downloadBackup(){await makeDownload(await makeBackupFile())}
+async function downloadBackup(){await makeDownload(shareFileCache||buildBackupFile(window.events||[]))}
 $('backupBtn').onclick=()=>downloadBackup().catch(e=>alert('Не удалось сохранить копию: '+e.message));
-$('shareFileBtn').onclick=async()=>{
- let file;
- try{file=await makeBackupFile()}catch(e){alert('Не удалось подготовить календарь: '+e.message);return}
- if(navigator.share&&navigator.canShare){
-  try{if(navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Календарь'});return}}catch(e){if(e.name==='AbortError')return}
+$('shareFileBtn').onclick=()=>{
+ const file=shareFileCache;
+ if(!file){alert('Календарь ещё загружается. Подождите секунду и повторите попытку.');return}
+ if(typeof navigator.share==='function'&&typeof navigator.canShare==='function'){
+  try{
+   if(navigator.canShare({files:[file]})){
+    let sharePromise=navigator.share({files:[file],title:'Календарь',text:'Резервная копия моего календаря'});
+    Promise.resolve(sharePromise).catch(async e=>{
+     if(e&&e.name==='AbortError')return;
+     try{await makeDownload(file);alert('Системная отправка недоступна. Файл календаря скачан — прикрепите его к сообщению вручную.')}
+     catch(err){alert('Не удалось поделиться или скачать файл: '+(err.message||err))}
+    });
+    return;
+   }
+  }catch(e){}
  }
- try{await makeDownload(file);alert('Файл календаря сохранён. Теперь прикрепите его к сообщению в мессенджере или отправьте по почте. На другом устройстве откройте календарь и нажмите «Получить файл».')}
- catch(e){alert('Браузер запретил отправку и скачивание файла. Разрешите загрузки для сайта и повторите попытку. Ошибка: '+e.message)}
+ try{makeDownload(file);alert('Файл календаря скачан. Прикрепите его к сообщению в мессенджере или отправьте по почте. На другом устройстве нажмите «Получить файл».')}
+ catch(e){alert('Не удалось скачать файл: '+(e.message||e))}
 };
 $('restoreBtn').onclick=()=>$('restoreFile').click();$('restoreFile').onchange=async e=>{let f=e.target.files[0];if(!f)return;try{let data=JSON.parse(await f.text());if(!Array.isArray(data.events)||!['calendar-backup-v1','calendar-qr-v1'].includes(data.protocol))throw Error('Это не файл календаря или формат не поддерживается');for(let x of data.events){let old=(await all()).find(y=>y.id===x.id);if(!old||Number(x.updatedAt||0)>Number(old.updatedAt||0))await put(x)}await refresh();alert('Импорт завершён')}catch(err){alert('Не удалось импортировать: '+err.message)}e.target.value=''};
 (async()=>{try{db=await openDB();await refresh();checkReminders();setInterval(checkReminders,15000);if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{})}catch(e){alert('Не удалось открыть локальную базу данных: '+e.message)}})();

@@ -58,33 +58,30 @@ $('startScan').onclick=async()=>{if(!window.Html5Qrcode){$('scanStatus').textCon
 $('stopScan').onclick=async()=>{if(scanner){try{await scanner.stop()}catch{}scanner=null}};
 let scanBusy=false,completedPacks=new Set();async function onScan(text){if(scanBusy)return;try{let raw=String(text||'').trim(),f;try{f=JSON.parse(raw)}catch{ $('scanStatus').textContent='Код распознан камерой, но это не QR календаря. Откройте на другом устройстве вкладку «Передать» и наведите камеру на QR целиком.';return}if(f.p!=='cal1'||!f.id||!Number.isInteger(f.i)||!Number.isInteger(f.n)||f.i<1||f.i>f.n||typeof f.d!=='string'){ $('scanStatus').textContent='QR распознан, но формат кадра не подходит. Убедитесь, что на другом устройстве открыта актуальная версия календаря.';return}if(completedPacks.has(f.id))return;let pack=received.get(f.id)||{n:f.n,parts:{}};if(pack.n!==f.n){received.delete(f.id);pack={n:f.n,parts:{}}}pack.parts[f.i]=f.d;received.set(f.id,pack);let got=Object.keys(pack.parts).length;$('scanStatus').textContent='Кадр '+f.i+' распознан. Получено '+got+' из '+pack.n+'. Перейдите к следующему QR на передающем устройстве.';if(got===pack.n){scanBusy=true;let payload=Array.from({length:pack.n},(_,i)=>pack.parts[i+1]).join(''),data=JSON.parse(unb64(payload));if(data.protocol!=='calendar-qr-v1'||!Array.isArray(data.events))throw Error('Содержимое пакета не соответствует формату календаря');let count=0,currentEvents=await all(),map=new Map(currentEvents.map(e=>[e.id,e]));for(let incoming of data.events){let current=map.get(incoming.id);if(!current||Number(incoming.updatedAt||0)>Number(current.updatedAt||0)){await put(incoming);count++}}received.delete(f.id);completedPacks.add(f.id);await refresh();$('scanStatus').textContent='Импорт завершён. Применено записей: '+count+'. Теперь можно передать QR обратно для двустороннего обмена.';scanBusy=false}}catch(e){scanBusy=false;$('scanStatus').textContent='Ошибка чтения пакета: '+(e.message||e)+'. Попробуйте повторно отсканировать кадры этого пакета.'}}
 function buildBackupFile(events){let data={protocol:'calendar-backup-v1',createdAt:stamp(),events};return new File([JSON.stringify(data,null,2)],'calendar-'+dateKey(new Date())+'.json',{type:'application/json'})}
-async function makeDownload(file){
- const url=URL.createObjectURL(file);
- const a=document.createElement('a');
+function makeDownload(file){
+ const url=URL.createObjectURL(file),a=document.createElement('a');
  a.href=url;a.download=file.name;a.style.display='none';
  document.body.appendChild(a);a.click();
  setTimeout(()=>{a.remove();URL.revokeObjectURL(url)},60000);
 }
-async function downloadBackup(){await makeDownload(shareFileCache||buildBackupFile(window.events||[]))}
-$('backupBtn').onclick=()=>downloadBackup().catch(e=>alert('Не удалось сохранить копию: '+e.message));
+function downloadBackup(){makeDownload(buildBackupFile(window.events||[]))}
+$('backupBtn').onclick=()=>{try{downloadBackup()}catch(e){alert('Не удалось сохранить копию: '+e.message)}};
 $('shareFileBtn').onclick=()=>{
- const file=shareFileCache;
- if(!file){alert('Календарь ещё загружается. Подождите секунду и повторите попытку.');return}
+ let file;
+ try{file=buildBackupFile(window.events||[])}catch(e){alert('Не удалось подготовить календарь: '+e.message);return}
+ const fallback=()=>{try{makeDownload(file);alert('Файл календаря скачан. Прикрепите его к сообщению или письму. На другом устройстве нажмите «Получить файл».')}catch(e){alert('Не удалось скачать файл. Проверьте разрешение на загрузки браузера. Ошибка: '+(e.message||e))}};
  if(typeof navigator.share==='function'&&typeof navigator.canShare==='function'){
   try{
    if(navigator.canShare({files:[file]})){
-    let sharePromise=navigator.share({files:[file],title:'Календарь',text:'Резервная копия моего календаря'});
-    Promise.resolve(sharePromise).catch(async e=>{
+    navigator.share({files:[file],title:'Календарь',text:'Резервная копия календаря'}).catch(e=>{
      if(e&&e.name==='AbortError')return;
-     try{await makeDownload(file);alert('Системная отправка недоступна. Файл календаря скачан — прикрепите его к сообщению вручную.')}
-     catch(err){alert('Не удалось поделиться или скачать файл: '+(err.message||err))}
+     fallback();
     });
     return;
    }
   }catch(e){}
  }
- try{makeDownload(file);alert('Файл календаря скачан. Прикрепите его к сообщению в мессенджере или отправьте по почте. На другом устройстве нажмите «Получить файл».')}
- catch(e){alert('Не удалось скачать файл: '+(e.message||e))}
+ fallback();
 };
 $('restoreBtn').onclick=()=>$('restoreFile').click();$('restoreFile').onchange=async e=>{let f=e.target.files[0];if(!f)return;try{let data=JSON.parse(await f.text());if(!Array.isArray(data.events)||!['calendar-backup-v1','calendar-qr-v1'].includes(data.protocol))throw Error('Это не файл календаря или формат не поддерживается');for(let x of data.events){let old=(await all()).find(y=>y.id===x.id);if(!old||Number(x.updatedAt||0)>Number(old.updatedAt||0))await put(x)}await refresh();alert('Импорт завершён')}catch(err){alert('Не удалось импортировать: '+err.message)}e.target.value=''};
 (async()=>{try{db=await openDB();await refresh();checkReminders();setInterval(checkReminders,15000);if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{})}catch(e){alert('Не удалось открыть локальную базу данных: '+e.message)}})();
